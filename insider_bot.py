@@ -1,73 +1,60 @@
 import requests
 import time
-import json
-import os
 from datetime import datetime, timedelta
 
+# 你的設定
 BOT_TOKEN = "8216193424:AAHtDkN3ibr-jyDSCo7ERoqnY3vKdjvzCnA"
 CHAT_ID = "5733112110"
 FINNHUB_TOKEN = "d2hlsahr01qv0ma89lo0d2hlsahr01qv0ma89log"
 
-SENT_FILE = "sent.json"
-
-if not os.path.exists(SENT_FILE):
-    with open(SENT_FILE, "w") as f:
-        json.dump([], f)
-
-def send_telegram(msg):
+# 傳訊息到 Telegram
+def send_telegram(message: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": msg}
-    requests.post(url, data=payload)
+    payload = {"chat_id": CHAT_ID, "text": message}
+    try:
+        requests.post(url, data=payload)
+    except Exception as e:
+        print("Telegram Error:", e)
 
-def load_sent():
-    with open(SENT_FILE, "r") as f:
-        return set(json.load(f))
+# 抓 Finnhub 的全美股內部人交易
+def check_all_insider_trades():
+    today = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")  # 最近 3 天
+    url = f"https://finnhub.io/api/v1/stock/insider-transactions?symbol=&from={start_date}&to={today}&token={FINNHUB_TOKEN}"
 
-def save_sent(sent_ids):
-    with open(SENT_FILE, "w") as f:
-        json.dump(list(sent_ids), f)
+    try:
+        r = requests.get(url)
+        data = r.json()
 
-def get_symbols(limit=2000):
-    url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_TOKEN}"
-    r = requests.get(url).json()
-    symbols = [x["symbol"] for x in r if x.get("type")=="Common Stock"][:limit]
-    return symbols
+        if "data" in data:
+            for trade in data["data"]:
+                if trade.get("transactionCode") == "P":  # P = Purchase
+                    price = trade.get("transactionPrice", 0) or 0
+                    shares = trade.get("share", 0) or 0
+                    total_value = price * shares
 
-def check_insider(symbol, sent_ids):
-    url = f"https://finnhub.io/api/v1/stock/insider-transactions?symbol={symbol}&token={FINNHUB_TOKEN}"
-    r = requests.get(url).json()
-    for d in r.get("data", []):
-        if d.get("transactionCode")=="P":
-            filing_date = datetime.strptime(d['filingDate'], "%Y-%m-%d")
-            if filing_date < datetime.now() - timedelta(days=3):
-                continue
-            uid = f"{d['symbol']}_{d['filingDate']}_{d['name']}_{d['share']}"
-            if uid not in sent_ids:
-                msg = (f"📢 內部人買進通知\n"
-                       f"公司: {d['symbol']}\n"
-                       f"姓名: {d['name']}\n"
-                       f"職位: {d['position']}\n"
-                       f"數量: {d['share']} 股\n"
-                       f"價格: ${d['price']}\n"
-                       f"日期: {d['filingDate']}")
-                send_telegram(msg)
-                sent_ids.add(uid)
+                    # 只推播金額 >= $100,000 的交易
+                    if total_value >= 100000:
+                        msg = (
+                            f"🚨 Insider Buy Alert\n"
+                            f"股票: {trade.get('symbol')}\n"
+                            f"人物: {trade.get('name')}\n"
+                            f"職位: {trade.get('position')}\n"
+                            f"數量: {shares} 股\n"
+                            f"單價: ${price}\n"
+                            f"總金額: ${total_value:,.0f}\n"
+                            f"日期: {trade.get('transactionDate')}"
+                        )
+                        send_telegram(msg)
+    except Exception as e:
+        print("Finnhub Error:", e)
 
+# 主程式
 def main():
-    sent_ids = load_sent()
-    symbols = get_symbols(limit=2000)
-    batch_size = 60
     while True:
-        for i in range(0, len(symbols), batch_size):
-            batch = symbols[i:i+batch_size]
-            for symbol in batch:
-                try:
-                    check_insider(symbol, sent_ids)
-                except:
-                    pass
-                time.sleep(1)
-            save_sent(sent_ids)
-            time.sleep(60)
+        check_all_insider_trades()
+        time.sleep(3600)  # 每小時檢查一次
 
 if __name__ == "__main__":
+    send_telegram("🚀 BOT 已經在 Railway 上跑起來！（監控全美股內部人大額買進 ≥ $100K）")
     main()
